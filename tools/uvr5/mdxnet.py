@@ -7,6 +7,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
+import torch_musa  # 添加MUSA支持
 from tqdm import tqdm
 
 cpu = torch.device("cpu")

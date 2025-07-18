@@ -9,6 +9,7 @@ import platform
 from pathlib import Path
 
 import torch
+import torch_musa  # 添加MUSA支持
 from AR.data.data_module import Text2SemanticDataModule
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from AR.utils.io import load_yaml_config
@@ -24,6 +25,17 @@ from collections import OrderedDict
 
 from AR.utils import get_newest_ckpt
 from process_ckpt import my_save
+
+# 修改设备检测逻辑以支持MUSA
+def get_device():
+    if torch_musa.is_available():
+        return "musa"
+    elif torch.cuda.is_available():
+        return "cuda"
+    else:
+        return "cpu"
+
+device = get_device()
 
 
 class my_model_ckpt(ModelCheckpoint):
@@ -108,18 +120,31 @@ def main(args):
     logger = TensorBoardLogger(name=output_dir.stem, save_dir=output_dir)
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["USE_LIBUV"] = "0"
+    
+    # 修改设备检测逻辑
+    if torch_musa.is_available():
+        accelerator = "gpu"
+        devices = 1  # MUSA暂时使用单GPU
+        strategy = "auto"  # 不使用分布式训练
+    elif torch.cuda.is_available():
+        accelerator = "gpu"
+        devices = -1
+        strategy = DDPStrategy(process_group_backend="nccl" if platform.system() != "Windows" else "gloo")
+    else:
+        accelerator = "cpu"
+        devices = 1
+        strategy = "auto"
+    
     trainer: Trainer = Trainer(
         max_epochs=config["train"]["epochs"],
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        accelerator=accelerator,
         # val_check_interval=9999999999999999999999,###不要验证
         # check_val_every_n_epoch=None,
         limit_val_batches=0,
-        devices=-1 if torch.cuda.is_available() else 1,
+        devices=devices,
         benchmark=False,
         fast_dev_run=False,
-        strategy=DDPStrategy(process_group_backend="nccl" if platform.system() != "Windows" else "gloo")
-        if torch.cuda.is_available()
-        else "auto",
+        strategy=strategy,
         precision=config["train"]["precision"],
         logger=logger,
         num_sanity_val_steps=0,

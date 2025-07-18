@@ -1,0 +1,24 @@
+conda env list
+
+conda create -n asr_env python=3.10 -y
+
+conda activate asr_env
+
+pip install /home/fit/00lib/00musa/00py/torch-2.2.0-cp310-cp310-linux_x86_64.whl
+
+pip install /home/fit/00lib/00musa/00py/torch_musa-2.0.0-cp310-cp310-linux_x86_64.whl
+
+pip install /home/fit/00lib/00musa/00py/torchaudio-2.2.2+cefdb36-cp310-cp310-linux_x86_64.whl
+
+pip install /home/fit/00lib/00musa/00py/torchvision-0.17.2+c1d70fe-cp310-cp310-linux_x86_64.whl
+
+pip install 'numpy<=1.26.4' #or 'numpy<2'
+
+conda install -c conda-forge ffmpeg=5.1.2 -y
+
+which ffmpeg
+
+pip install modelscope huggingface huggingface_hub gradio fastapi
+
+pip install 'funasr>=1.1.3'
+

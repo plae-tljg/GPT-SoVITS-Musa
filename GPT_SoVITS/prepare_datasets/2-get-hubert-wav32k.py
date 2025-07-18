@@ -15,8 +15,11 @@ from feature_extractor import cnhubert
 opt_dir = os.environ.get("opt_dir")
 cnhubert.cnhubert_base_path = os.environ.get("cnhubert_base_dir")
 import torch
+import torch_musa
 
-is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
+# 检查是否使用MUSA GPU，如果是则强制使用float32（不支持half）
+use_musa = torch_musa.is_available()
+is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available() and not use_musa
 
 import traceback
 import numpy as np
@@ -61,6 +64,8 @@ maxx = 0.95
 alpha = 0.5
 if torch.cuda.is_available():
     device = "cuda:0"
+elif torch_musa.is_available():
+    device = "musa:0"
 # elif torch.backends.mps.is_available():
 #     device = "mps"
 else:

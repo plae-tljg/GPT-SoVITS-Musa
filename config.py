@@ -3,7 +3,7 @@ import re
 import sys
 
 import torch
-
+import torch_musa  # 添加MUSA支持
 from tools.i18n.i18n import I18nAuto
 
 i18n = I18nAuto(language=os.environ.get("language", "Auto"))
@@ -148,6 +148,20 @@ api_port = 9880
 # Thanks to the contribution of @Karasukaigan and @XXXXRT666
 def get_device_dtype_sm(idx: int) -> tuple[torch.device, torch.dtype, float, float]:
     cpu = torch.device("cpu")
+    
+    # 检查MUSA设备
+    if torch_musa.is_available():
+        try:
+            musa = torch.device(f"musa:{idx}")
+            # 获取MUSA设备信息
+            mem_bytes = torch_musa.get_device_properties(idx).total_memory
+            mem_gb = mem_bytes / (1024**3) + 0.4
+            # MUSA设备默认支持float16
+            return musa, torch.float16, 8.0, mem_gb  # 假设MUSA的SM版本为8.0
+        except:
+            pass
+    
+    # 检查CUDA设备
     cuda = torch.device(f"cuda:{idx}")
     if not torch.cuda.is_available():
         return cpu, torch.float32, 0.0, 0.0
@@ -171,19 +185,40 @@ def get_device_dtype_sm(idx: int) -> tuple[torch.device, torch.dtype, float, flo
 IS_GPU = True
 GPU_INFOS: list[str] = []
 GPU_INDEX: set[int] = set()
-GPU_COUNT = torch.cuda.device_count()
+
+# 检查MUSA设备
+MUSA_COUNT = torch_musa.device_count() if torch_musa.is_available() else 0
+# 检查CUDA设备
+CUDA_COUNT = torch.cuda.device_count() if torch.cuda.is_available() else 0
+# 总GPU数量
+GPU_COUNT = max(MUSA_COUNT, CUDA_COUNT)
+
 CPU_INFO: str = "0\tCPU " + i18n("CPU训练,较慢")
 tmp: list[tuple[torch.device, torch.dtype, float, float]] = []
 memset: set[float] = set()
 
-for i in range(max(GPU_COUNT, 1)):
-    tmp.append(get_device_dtype_sm(i))
+# 检测MUSA设备
+if torch_musa.is_available():
+    for i in range(MUSA_COUNT):
+        tmp.append(get_device_dtype_sm(i))
+
+# 检测CUDA设备
+if torch.cuda.is_available():
+    for i in range(CUDA_COUNT):
+        tmp.append(get_device_dtype_sm(i))
+
+# 如果没有检测到任何GPU设备
+if not tmp:
+    tmp.append((torch.device("cpu"), torch.float32, 0.0, 0.0))
 
 for j in tmp:
     device = j[0]
     memset.add(j[3])
     if device.type != "cpu":
-        GPU_INFOS.append(f"{device.index}\t{torch.cuda.get_device_name(device.index)}")
+        if device.type == "musa":
+            GPU_INFOS.append(f"{device.index}\tMUSA GPU {device.index}")
+        else:
+            GPU_INFOS.append(f"{device.index}\t{torch.cuda.get_device_name(device.index)}")
         GPU_INDEX.add(device.index)
 
 if not GPU_INFOS:

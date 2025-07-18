@@ -20,6 +20,10 @@ def cleaned_text_to_sequence(cleaned_text, version=None):
     """
     if version is None:
         version = os.environ.get("version", "v2")
+    
+    # 过滤掉空字符串
+    cleaned_text = [symbol for symbol in cleaned_text if symbol.strip()]
+    
     if version == "v1":
         phones = [_symbol_to_id_v1[symbol] for symbol in cleaned_text]
     else:

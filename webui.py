@@ -14,6 +14,7 @@ import signal
 
 import psutil
 import torch
+import torch_musa
 import yaml
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
@@ -86,10 +87,13 @@ from config import (
 from tools import my_utils
 from tools.my_utils import check_details, check_for_existance
 
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
 # os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1' # 当遇到mps不支持的步骤时使用cpu
+try:
+    import gradio.analytics as analytics
+
+    analytics.version_check = lambda: None
+except:
+    ...
 import gradio as gr
 
 n_cpu = cpu_count()
@@ -302,9 +306,16 @@ process_name_uvr5 = i18n("人声分离WebUI")
 def change_uvr5():
     global p_uvr5
     if p_uvr5 is None:
+        # 确保设备字符串格式正确
+        device_str = str(infer_device)
+        if device_str.startswith("musa"):
+            # 对于MUSA设备，确保格式正确
+            if ":" not in device_str:
+                device_str = "musa:0"
+        
         cmd = '"%s" -s tools/uvr5/webui.py "%s" %s %s %s' % (
             python_exec,
-            infer_device,
+            device_str,
             is_half,
             webui_port_uvr5,
             is_share,

@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import torch
+import torch_musa  # 添加MUSA支持
 from tqdm import tqdm
 
 
@@ -68,10 +69,18 @@ def inference(X_spec, device, model, aggressiveness, data):
 
     X_mag_pad = np.pad(X_mag_pre, ((0, 0), (0, 0), (pad_l, pad_r)), mode="constant")
 
-    if list(model.state_dict().values())[0].dtype == torch.float16:
-        is_half = True
-    else:
+    # 检查设备类型并设置精度
+    if device.startswith("musa"):
+        # 对于MUSA设备，强制使用全精度以避免muDNN不支持半精度卷积的错误
         is_half = False
+        print("MUSA设备检测到，强制使用全精度模式")
+    else:
+        # 对于其他设备，根据模型状态自动检测精度
+        if list(model.state_dict().values())[0].dtype == torch.float16:
+            is_half = True
+        else:
+            is_half = False
+    
     pred = _execute(X_mag_pad, roi_size, n_window, device, model, aggressiveness, is_half)
     pred = pred[:, :, :n_frame]
 

@@ -12,8 +12,11 @@ if "_CUDA_VISIBLE_DEVICES" in os.environ:
 opt_dir = os.environ.get("opt_dir")
 bert_pretrained_dir = os.environ.get("bert_pretrained_dir")
 import torch
+import torch_musa
 
-is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
+# 检查是否使用MUSA GPU，如果是则强制使用float32（不支持half）
+use_musa = torch_musa.is_available()
+is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available() and not use_musa
 version = os.environ.get("version", None)
 import traceback
 import os.path
@@ -50,6 +53,8 @@ if os.path.exists(txt_path) == False:
     os.makedirs(bert_dir, exist_ok=True)
     if torch.cuda.is_available():
         device = "cuda:0"
+    # elif torch_musa.is_available():
+    #     device = "musa:0"
     # elif torch.backends.mps.is_available():
     #     device = "mps"
     else:

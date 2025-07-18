@@ -14,6 +14,7 @@ import sys
 
 import ffmpeg
 import torch
+import torch_musa  # 添加MUSA支持
 from bsroformer import Roformer_Loader
 from mdxnet import MDXNetDereverb
 from vr import AudioPre, AudioPreDeEcho
@@ -24,10 +25,23 @@ for name in os.listdir(weight_uvr5_root):
     if name.endswith(".pth") or name.endswith(".ckpt") or "onnx" in name:
         uvr5_names.append(name.replace(".pth", "").replace(".ckpt", ""))
 
+# 修改设备检测逻辑以支持MUSA
 device = sys.argv[1]
 is_half = eval(sys.argv[2])
 webui_port_uvr5 = int(sys.argv[3])
 is_share = eval(sys.argv[4])
+
+# 强制UVR5使用CPU以避免MUSA设备的兼容性问题
+# MUSA设备在UVR5中会遇到半精度卷积不支持等问题，因此强制使用CPU
+if device.startswith("musa") or device.startswith("cuda"):
+    logger.info(f"UVR5强制使用CPU以避免GPU兼容性问题，原设备: {device}")
+    device = "cpu"
+    is_half = False  # CPU模式下禁用半精度
+else:
+    # 其他情况（如cpu）保持不变
+    device = device
+
+logger.info(f"UVR5使用设备: {device}, 半精度模式: {is_half}")
 
 
 def html_left(text, label="p"):
@@ -120,8 +134,11 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
         except:
             traceback.print_exc()
         print("clean_empty_cache")
+        # 清理GPU内存
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        elif torch_musa.is_available():
+            torch_musa.empty_cache()
     yield "\n".join(infos)
 
 

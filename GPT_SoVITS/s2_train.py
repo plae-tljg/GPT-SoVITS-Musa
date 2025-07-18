@@ -10,6 +10,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = hps.train.gpu_numbers.replace("-", ",")
 import logging
 
 import torch
+import torch_musa
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.cuda.amp import GradScaler, autocast
@@ -47,25 +48,38 @@ torch.set_float32_matmul_precision("medium")  # 最低精度但最快（也就�
 # from config import pretrained_s2G,pretrained_s2D
 global_step = 0
 
-device = "cpu"  # cuda以外的设备，等mps优化后加入
+# 修改设备检测逻辑以支持MUSA
+def get_device():
+    if torch_musa.is_available():
+        return "musa"
+    elif torch.cuda.is_available():
+        return "cuda"
+    else:
+        return "cpu"
+
+device = get_device()
 
 
 def main():
-    if torch.cuda.is_available():
+    # 修改设备检测逻辑
+    if torch_musa.is_available():
+        n_gpus = 1  # MUSA暂时使用单GPU训练
+    elif torch.cuda.is_available():
         n_gpus = torch.cuda.device_count()
     else:
         n_gpus = 1
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(randint(20000, 55555))
 
-    mp.spawn(
-        run,
-        nprocs=n_gpus,
-        args=(
-            n_gpus,
-            hps,
-        ),
-    )
+    # 对于MUSA设备，直接运行而不使用分布式训练
+    if torch_musa.is_available():
+        run(0, 1, hps)
+    else:
+        mp.spawn(
+            run,
+            nprocs=n_gpus,
+            args=(n_gpus, hps),
+        )
 
 
 def run(rank, n_gpus, hps):
@@ -77,55 +91,87 @@ def run(rank, n_gpus, hps):
         writer = SummaryWriter(log_dir=hps.s2_ckpt_dir)
         writer_eval = SummaryWriter(log_dir=os.path.join(hps.s2_ckpt_dir, "eval"))
 
-    dist.init_process_group(
-        backend="gloo" if os.name == "nt" or not torch.cuda.is_available() else "nccl",
-        init_method="env://?use_libuv=False",
-        world_size=n_gpus,
-        rank=rank,
-    )
+    # 对于MUSA设备，跳过分布式训练初始化
+    if torch_musa.is_available():
+        # MUSA设备不使用分布式训练
+        pass
+    else:
+        # 修改分布式训练后端选择
+        if torch_musa.is_available():
+            backend = "gloo"  # MUSA暂时使用gloo后端
+        elif torch.cuda.is_available():
+            backend = "nccl"
+        else:
+            backend = "gloo"
+
+        dist.init_process_group(
+                backend=backend,
+            init_method="env://?use_libuv=False",
+            world_size=n_gpus,
+            rank=rank,
+        )
+    
     torch.manual_seed(hps.train.seed)
-    if torch.cuda.is_available():
+    
+    # 设置设备
+    if torch_musa.is_available():
+        torch_musa.set_device(rank)
+    elif torch.cuda.is_available():
         torch.cuda.set_device(rank)
 
     train_dataset = TextAudioSpeakerLoader(hps.data, version=hps.model.version)
-    train_sampler = DistributedBucketSampler(
-        train_dataset,
-        hps.train.batch_size,
-        [
-            32,
-            300,
-            400,
-            500,
-            600,
-            700,
-            800,
-            900,
-            1000,
-            1100,
-            1200,
-            1300,
-            1400,
-            1500,
-            1600,
-            1700,
-            1800,
-            1900,
-        ],
-        num_replicas=n_gpus,
-        rank=rank,
-        shuffle=True,
-    )
-    collate_fn = TextAudioSpeakerCollate(version=hps.model.version)
-    train_loader = DataLoader(
-        train_dataset,
-        num_workers=5,
-        shuffle=False,
-        pin_memory=True,
-        collate_fn=collate_fn,
-        batch_sampler=train_sampler,
-        persistent_workers=True,
-        prefetch_factor=4,
-    )
+    
+    # 对于MUSA设备，使用普通的数据加载器
+    if torch_musa.is_available():
+        train_loader = DataLoader(
+            train_dataset,
+            num_workers=5,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=TextAudioSpeakerCollate(version=hps.model.version),
+            batch_size=hps.train.batch_size,
+            persistent_workers=True,
+            prefetch_factor=4,
+        )
+    else:
+        train_sampler = DistributedBucketSampler(
+            train_dataset,
+            hps.train.batch_size,
+            [
+                32,
+                300,
+                400,
+                500,
+                600,
+                700,
+                800,
+                900,
+                1000,
+                1100,
+                1200,
+                1300,
+                1400,
+                1500,
+                1600,
+                1700,
+                1800,
+                1900,
+            ],
+            num_replicas=n_gpus,
+            rank=rank,
+            shuffle=True,
+        )
+        collate_fn = TextAudioSpeakerCollate(version=hps.model.version)
+        train_loader = DataLoader(
+            train_dataset,
+            num_workers=5,
+            shuffle=False,
+            pin_memory=True,
+            collate_fn=collate_fn,
+            batch_sampler=train_sampler,
+            persistent_workers=True,
+            prefetch_factor=4,
+        )
     # if rank == 0:
     #     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps.data, val=True)
     #     eval_loader = DataLoader(eval_dataset, num_workers=0, shuffle=False,
@@ -138,8 +184,8 @@ def run(rank, n_gpus, hps):
             hps.train.segment_size // hps.data.hop_length,
             n_speakers=hps.data.n_speakers,
             **hps.model,
-        ).cuda(rank)
-        if torch.cuda.is_available()
+        ).to(f"{device}:{rank}")
+        if device in ["musa", "cuda"]
         else SynthesizerTrn(
             hps.data.filter_length // 2 + 1,
             hps.train.segment_size // hps.data.hop_length,
@@ -149,8 +195,8 @@ def run(rank, n_gpus, hps):
     )
 
     net_d = (
-        MultiPeriodDiscriminator(hps.model.use_spectral_norm, version=hps.model.version).cuda(rank)
-        if torch.cuda.is_available()
+        MultiPeriodDiscriminator(hps.model.use_spectral_norm, version=hps.model.version).to(f"{device}:{rank}")
+        if device in ["musa", "cuda"]
         else MultiPeriodDiscriminator(hps.model.use_spectral_norm, version=hps.model.version).to(device)
     )
     for name, param in net_g.named_parameters():
@@ -196,7 +242,7 @@ def run(rank, n_gpus, hps):
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
-    if torch.cuda.is_available():
+    if device in ["musa", "cuda"] and not torch_musa.is_available():
         net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
         net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
     else:
@@ -238,7 +284,7 @@ def run(rank, n_gpus, hps):
                     torch.load(hps.train.pretrained_s2G, map_location="cpu", weights_only=False)["weight"],
                     strict=False,
                 )
-                if torch.cuda.is_available()
+                if device in ["musa", "cuda"] and not torch_musa.is_available()
                 else net_g.load_state_dict(
                     torch.load(hps.train.pretrained_s2G, map_location="cpu", weights_only=False)["weight"],
                     strict=False,
@@ -256,7 +302,7 @@ def run(rank, n_gpus, hps):
                 net_d.module.load_state_dict(
                     torch.load(hps.train.pretrained_s2D, map_location="cpu", weights_only=False)["weight"], strict=False
                 )
-                if torch.cuda.is_available()
+                if device in ["musa", "cuda"] and not torch_musa.is_available()
                 else net_d.load_state_dict(
                     torch.load(hps.train.pretrained_s2D, map_location="cpu", weights_only=False)["weight"],
                 ),
@@ -323,7 +369,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     if writers is not None:
         writer, writer_eval = writers
 
-    train_loader.batch_sampler.set_epoch(epoch)
+    # 对于MUSA设备，不需要设置epoch
+    if not torch_musa.is_available():
+        train_loader.batch_sampler.set_epoch(epoch)
     global global_step
 
     net_g.train()
@@ -333,51 +381,41 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             ssl, ssl_lengths, spec, spec_lengths, y, y_lengths, text, text_lengths, sv_emb = data
         else:
             ssl, ssl_lengths, spec, spec_lengths, y, y_lengths, text, text_lengths = data
-        if torch.cuda.is_available():
+        if device in ["musa", "cuda"]:
             spec, spec_lengths = (
-                spec.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-                spec_lengths.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
+                spec.to(f"{device}:{rank}", non_blocking=True),
+                spec_lengths.to(f"{device}:{rank}", non_blocking=True),
             )
             y, y_lengths = (
-                y.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-                y_lengths.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
+                y.to(f"{device}:{rank}", non_blocking=True),
+                y_lengths.to(f"{device}:{rank}", non_blocking=True),
             )
-            ssl = ssl.cuda(rank, non_blocking=True)
+            ssl = ssl.to(f"{device}:{rank}", non_blocking=True)
             ssl.requires_grad = False
-            # ssl_lengths = ssl_lengths.cuda(rank, non_blocking=True)
+            # ssl_lengths = ssl_lengths.to(f"{device}:{rank}", non_blocking=True)
             text, text_lengths = (
-                text.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-                text_lengths.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
+                text.to(f"{device}:{rank}", non_blocking=True),
+                text_lengths.to(f"{device}:{rank}", non_blocking=True),
             )
             if hps.model.version in {"v2Pro", "v2ProPlus"}:
-                sv_emb = sv_emb.cuda(rank, non_blocking=True)
+                sv_emb = sv_emb.to(f"{device}:{rank}", non_blocking=True)
         else:
             spec, spec_lengths = spec.to(device), spec_lengths.to(device)
             y, y_lengths = y.to(device), y_lengths.to(device)
             ssl = ssl.to(device)
             ssl.requires_grad = False
-            # ssl_lengths = ssl_lengths.cuda(rank, non_blocking=True)
+            # ssl_lengths = ssl_lengths.to(device)
             text, text_lengths = text.to(device), text_lengths.to(device)
             if hps.model.version in {"v2Pro", "v2ProPlus"}:
                 sv_emb = sv_emb.to(device)
+        # 根据设备类型选择autocast
+        if device == "musa":
+            autocast_device = "musa"
+        elif device == "cuda":
+            autocast_device = "cuda"
+        else:
+            autocast_device = "cpu"
+            
         with autocast(enabled=hps.train.fp16_run):
             if hps.model.version in {"v2Pro", "v2ProPlus"}:
                 (y_hat, kl_ssl, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q), stats_ssl) = net_g(

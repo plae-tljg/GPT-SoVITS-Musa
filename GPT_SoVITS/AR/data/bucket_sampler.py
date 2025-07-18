@@ -7,6 +7,7 @@ from random import shuffle
 from typing import Iterator, Optional, TypeVar
 
 import torch
+import torch_musa  # 添加MUSA支持
 import torch.distributed as dist
 from torch.utils.data import Dataset, Sampler
 
@@ -15,6 +16,17 @@ __all__ = [
 ]
 
 T_co = TypeVar("T_co", covariant=True)
+
+# 修改设备检测逻辑以支持MUSA
+def get_device():
+    if torch_musa.is_available():
+        return "musa"
+    elif torch.cuda.is_available():
+        return "cuda"
+    else:
+        return "cpu"
+
+device = get_device()
 
 
 class DistributedBucketSampler(Sampler[T_co]):
@@ -39,12 +51,27 @@ class DistributedBucketSampler(Sampler[T_co]):
         if num_replicas is None:
             if not dist.is_available():
                 raise RuntimeError("Requires distributed package to be available")
-            num_replicas = dist.get_world_size() if torch.cuda.is_available() else 1
+            # 修改设备检测逻辑
+            if torch_musa.is_available():
+                num_replicas = 1  # MUSA暂时使用单GPU
+            elif torch.cuda.is_available():
+                num_replicas = dist.get_world_size()
+            else:
+                num_replicas = 1
         if rank is None:
             if not dist.is_available():
                 raise RuntimeError("Requires distributed package to be available")
-            rank = dist.get_rank() if torch.cuda.is_available() else 0
-            if torch.cuda.is_available():
+            # 修改设备检测逻辑
+            if torch_musa.is_available():
+                rank = 0  # MUSA暂时使用单GPU
+            elif torch.cuda.is_available():
+                rank = dist.get_rank()
+            else:
+                rank = 0
+            # 修改设备设置逻辑
+            if torch_musa.is_available():
+                torch_musa.set_device(rank)
+            elif torch.cuda.is_available():
                 torch.cuda.set_device(rank)
         if rank >= num_replicas or rank < 0:
             raise ValueError("Invalid rank {}, rank should be in the interval [0, {}]".format(rank, num_replicas - 1))

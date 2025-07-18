@@ -6,6 +6,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
+import torch_musa  # 添加MUSA支持
 import torch.nn as nn
 import yaml
 from tqdm import tqdm
@@ -135,7 +136,15 @@ class Roformer_Loader:
         window_middle[-fade_size:] *= fadeout
         window_middle[:fade_size] *= fadein
 
-        with torch.amp.autocast("cuda"):
+        # 根据设备类型选择autocast
+        if device.startswith("musa"):
+            autocast_device = "musa"
+        elif device.startswith("cuda"):
+            autocast_device = "cuda"
+        else:
+            autocast_device = "cpu"
+
+        with torch.amp.autocast(autocast_device):
             with torch.inference_mode():
                 if self.config["training"]["target_instrument"] is None:
                     req_shape = (len(self.config["training"]["instruments"]),) + tuple(mix.shape)

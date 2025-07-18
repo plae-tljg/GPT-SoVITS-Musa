@@ -29,6 +29,7 @@ import traceback
 import warnings
 
 import torch
+import torch_musa  # 添加MUSA支持
 import torchaudio
 from text.LangSegmenter import LangSegmenter
 
@@ -54,6 +55,17 @@ path_sovits_v4 = pretrained_sovits_name["v4"]
 is_exist_s2gv3 = os.path.exists(path_sovits_v3)
 is_exist_s2gv4 = os.path.exists(path_sovits_v4)
 
+def get_device():
+    if torch_musa.is_available():
+        return "musa"
+    elif torch.cuda.is_available():
+        return "cuda"
+    else:
+        return "cpu"
+
+device = get_device()
+print(f"推理使用设备: {device}")
+    
 if os.path.exists("./weight.json"):
     pass
 else:
@@ -78,6 +90,9 @@ with open("./weight.json", "r", encoding="utf-8") as file:
 # print(weight_data.get("GPT", {}))
 # print(version)###GPT version里没有s2的v2pro
 # print(weight_data.get("GPT", {}).get(version, GPT_names[-1]))
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 cnhubert_base_path = os.environ.get("cnhubert_base_path", "GPT_SoVITS/pretrained_models/chinese-hubert-base")
 bert_path = os.environ.get("bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large")
@@ -87,7 +102,12 @@ is_share = os.environ.get("is_share", "False")
 is_share = eval(is_share)
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
-is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
+# 在MUSA设备上禁用半精度，因为MUSA不支持半精度卷积操作
+if torch_musa.is_available():
+    is_half = False
+    print("MUSA设备检测到，禁用半精度模式")
+else:
+    is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
 # is_half=False
 punctuation = set(["!", "?", "…", ",", ".", "-", " "])
 import gradio as gr
@@ -111,7 +131,10 @@ def set_seed(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
+    if torch_musa.is_available():
+        torch_musa.manual_seed(seed)
+    elif torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
 
 
 # set_seed(42)
@@ -131,11 +154,6 @@ language = sys.argv[-1] if sys.argv[-1] in scan_language_list() else language
 i18n = I18nAuto(language=language)
 
 # os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  # 确保直接启动推理UI时也能够设置。
-
-if torch.cuda.is_available():
-    device = "cuda"
-else:
-    device = "cpu"
 
 dict_language_v1 = {
     i18n("中文"): "all_zh",  # 全部按中文识别
@@ -166,6 +184,11 @@ if is_half == True:
     bert_model = bert_model.half().to(device)
 else:
     bert_model = bert_model.to(device)
+
+# 在MUSA设备上强制确保模型使用全精度
+if torch_musa.is_available():
+    print("强制将bert_model转换为全精度模式")
+    bert_model = bert_model.float()  # 强制转换为全精度
 
 
 def get_bert_feature(text, word2ph):
@@ -217,6 +240,11 @@ if is_half == True:
     ssl_model = ssl_model.half().to(device)
 else:
     ssl_model = ssl_model.to(device)
+
+# 在MUSA设备上强制确保模型使用全精度
+if torch_musa.is_available():
+    print("强制将ssl_model转换为全精度模式")
+    ssl_model = ssl_model.float()  # 强制转换为全精度
 
 
 ###todo:put them to process_ckpt and modify my_save func (save sovits weights), gpt save weights use my_save in process_ckpt
@@ -410,7 +438,10 @@ def clean_hifigan_model():
         hifigan_model = hifigan_model.cpu()
         hifigan_model = None
         try:
-            torch.cuda.empty_cache()
+            if torch_musa.is_available():
+                torch_musa.empty_cache()
+            elif torch.cuda.is_available():
+                torch.cuda.empty_cache()
         except:
             pass
 
@@ -421,7 +452,10 @@ def clean_bigvgan_model():
         bigvgan_model = bigvgan_model.cpu()
         bigvgan_model = None
         try:
-            torch.cuda.empty_cache()
+            if torch_musa.is_available():
+                torch_musa.empty_cache()
+            elif torch.cuda.is_available():
+                torch.cuda.empty_cache()
         except:
             pass
 
@@ -432,7 +466,10 @@ def clean_sv_cn_model():
         sv_cn_model.embedding_model = sv_cn_model.embedding_model.cpu()
         sv_cn_model = None
         try:
-            torch.cuda.empty_cache()
+            if torch_musa.is_available():
+                torch_musa.empty_cache()
+            elif torch.cuda.is_available():
+                torch.cuda.empty_cache()
         except:
             pass
 
@@ -804,10 +841,13 @@ def get_tts_wav(
         dtype=np.float16 if is_half == True else np.float32,
     )
     zero_wav_torch = torch.from_numpy(zero_wav)
-    if is_half == True:
+    if is_half == True and not torch_musa.is_available():
         zero_wav_torch = zero_wav_torch.half().to(device)
     else:
         zero_wav_torch = zero_wav_torch.to(device)
+    # 在MUSA设备上强制使用全精度
+    if torch_musa.is_available():
+        zero_wav_torch = zero_wav_torch.float()
     if not ref_free:
         with torch.no_grad():
             wav16k, sr = librosa.load(ref_wav_path, sr=16000)
@@ -815,11 +855,14 @@ def get_tts_wav(
                 gr.Warning(i18n("参考音频在3~10秒范围外，请更换！"))
                 raise OSError(i18n("参考音频在3~10秒范围外，请更换！"))
             wav16k = torch.from_numpy(wav16k)
-            if is_half == True:
+            if is_half == True and not torch_musa.is_available():
                 wav16k = wav16k.half().to(device)
             else:
                 wav16k = wav16k.to(device)
             wav16k = torch.cat([wav16k, zero_wav_torch])
+            # 在MUSA设备上强制使用全精度
+            if torch_musa.is_available():
+                wav16k = wav16k.float()
             ssl_content = ssl_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2)  # .float()
             codes = vq_model.extract_latent(ssl_content)
             prompt_semantic = codes[0, 0]
