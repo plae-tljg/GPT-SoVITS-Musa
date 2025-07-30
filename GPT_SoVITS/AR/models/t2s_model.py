@@ -4,6 +4,7 @@ import math
 from typing import List, Optional
 
 import torch
+import torch_musa
 from torch import nn
 from torch.nn import functional as F
 from torchmetrics.classification import MulticlassAccuracy

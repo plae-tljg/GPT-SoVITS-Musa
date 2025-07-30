@@ -1,7 +1,7 @@
 """
 # WebAPI文档
 
-` python api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml `
+` python api_v2.py -a 0.0.0.0 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml `
 
 ## 执行参数:
     `-a` - `绑定地址, 默认"127.0.0.1"`
@@ -122,13 +122,20 @@ from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config
 from GPT_SoVITS.TTS_infer_pack.text_segmentation_method import get_method_names as get_cut_method_names
 from pydantic import BaseModel
 
+# 添加MUSA设备检测
+try:
+    import torch_musa
+    MUSA_AVAILABLE = torch_musa.is_available()
+except ImportError:
+    MUSA_AVAILABLE = False
+
 # print(sys.path)
 i18n = I18nAuto()
 cut_method_names = get_cut_method_names()
 
 parser = argparse.ArgumentParser(description="GPT-SoVITS api")
 parser.add_argument("-c", "--tts_config", type=str, default="GPT_SoVITS/configs/tts_infer.yaml", help="tts_infer路径")
-parser.add_argument("-a", "--bind_addr", type=str, default="127.0.0.1", help="default: 127.0.0.1")
+parser.add_argument("-a", "--bind_addr", type=str, default="0.0.0.0", help="default: 0.0.0.0")
 parser.add_argument("-p", "--port", type=int, default="9880", help="default: 9880")
 args = parser.parse_args()
 config_path = args.tts_config
@@ -139,6 +146,52 @@ argv = sys.argv
 
 if config_path in [None, ""]:
     config_path = "GPT-SoVITS/configs/tts_infer.yaml"
+
+# 在MUSA设备上禁用半精度，因为MUSA不支持半精度卷积操作
+if MUSA_AVAILABLE:
+    print("MUSA设备检测到，禁用半精度模式")
+    # 修改配置文件中的半精度设置
+    import yaml
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config_data = yaml.safe_load(f)
+    
+    # 确保custom配置中的半精度被禁用
+    if 'custom' in config_data:
+        config_data['custom']['is_half'] = False
+        config_data['custom']['device'] = 'musa'
+        
+        # 根据实际的模型路径来设置正确的版本
+        vits_weights_path = config_data['custom'].get('vits_weights_path', '')
+        t2s_weights_path = config_data['custom'].get('t2s_weights_path', '')
+        
+        print(f"调试信息 - vits_weights_path: {vits_weights_path}")
+        print(f"调试信息 - t2s_weights_path: {t2s_weights_path}")
+        
+        # 改进版本检测逻辑
+        if 'v2ProPlus' in vits_weights_path or 'v2ProPlus' in t2s_weights_path:
+            config_data['custom']['version'] = 'v2ProPlus'
+            print("检测到v2ProPlus模型，设置版本为v2ProPlus")
+        elif 'v2Pro' in vits_weights_path or 'v2Pro' in t2s_weights_path or 'GPT_weights_v2Pro' in t2s_weights_path or 'SoVITS_weights_v2Pro' in vits_weights_path:
+            config_data['custom']['version'] = 'v2Pro'
+            print("检测到v2Pro模型，设置版本为v2Pro")
+        elif 'v4' in vits_weights_path or 'v4' in t2s_weights_path:
+            config_data['custom']['version'] = 'v4'
+            print("检测到v4模型，设置版本为v4")
+        elif 'v3' in vits_weights_path or 'v3' in t2s_weights_path:
+            config_data['custom']['version'] = 'v3'
+            print("检测到v3模型，设置版本为v3")
+        elif 'v1' in vits_weights_path or 'v1' in t2s_weights_path:
+            config_data['custom']['version'] = 'v1'
+            print("检测到v1模型，设置版本为v1")
+        elif 'v2' in vits_weights_path or 'v2' in t2s_weights_path:
+            config_data['custom']['version'] = 'v2'
+            print("检测到v2模型，设置版本为v2")
+        else:
+            print(f"未检测到明确的版本标识，保持当前版本: {config_data['custom'].get('version', 'unknown')}")
+    
+    # 保存修改后的配置
+    with open(config_path, 'w', encoding='utf-8') as f:
+        yaml.dump(config_data, f, default_flow_style=False)
 
 tts_config = TTS_Config(config_path)
 print(tts_config)
@@ -157,7 +210,7 @@ class TTS_Request(BaseModel):
     top_k: int = 5
     top_p: float = 1
     temperature: float = 1
-    text_split_method: str = "cut5"
+    text_split_method: str = "cut1"
     batch_size: int = 1
     batch_threshold: float = 0.75
     split_bucket: bool = True
@@ -268,6 +321,34 @@ def check_params(req: dict):
 
     if ref_audio_path in [None, ""]:
         return JSONResponse(status_code=400, content={"message": "ref_audio_path is required"})
+    
+    # 检查参考音频文件是否存在
+    if not os.path.exists(ref_audio_path):
+        return JSONResponse(
+            status_code=400, 
+            content={
+                "message": f"Reference audio file not found: {ref_audio_path}",
+                "error_type": "file_not_found",
+                "suggested_paths": [
+                    "./TEMP/gradio/*/完成高难行动.wav",
+                    "./output/theresa/uvr5_opt/vocal_*.flac",
+                    "./output/theresa/slicer_opt/vocal_*.wav"
+                ]
+            }
+        )
+    
+    # 检查文件是否为音频文件
+    audio_extensions = ['.wav', '.mp3', '.flac', '.m4a', '.ogg']
+    file_ext = os.path.splitext(ref_audio_path)[1].lower()
+    if file_ext not in audio_extensions:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "message": f"File is not a supported audio format: {file_ext}",
+                "supported_formats": audio_extensions
+            }
+        )
+    
     if text in [None, ""]:
         return JSONResponse(status_code=400, content={"message": "text is required"})
     if text_lang in [None, ""]:

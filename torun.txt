@@ -1,0 +1,17 @@
+conda env list
+
+conda activate test_gptsovits_env
+
+python webui.py
+
+python -m GPT_SoVITS.inference_musa_cli_simplified  # for testing
+
+python api_v3_musa.py
+
+python test_api_v3_get.py
+
+
+# 旧版API v2 (如果还需要的话)
+python api_v2.py -a 0.0.0.0 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
+
+http://127.0.0.1:9880/tts?text=终有一天，我们可以点起火焰，燃尽一切腐朽。&text_lang=zh&ref_audio_path=完成高难行动.wav&prompt_lang=zh&prompt_text=气味强而有力，强而有力呀&text_split_method=cut1&batch_size=1&media_type=wav&streaming_mode=true

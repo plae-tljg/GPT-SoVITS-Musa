@@ -396,8 +396,10 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
 
 
 try:
+    print(sovits_path)
     next(change_sovits_weights(sovits_path))
 except:
+    print("change_sovits_weights error")
     pass
 
 

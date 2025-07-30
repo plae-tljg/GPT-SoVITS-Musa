@@ -4,9 +4,6 @@ Note this use the musa-4.0.0 SDK and the latest  torch_musa Release v2.0.0 built
 
 Note that some part which I encoutner problem converting into running by gpu (code doesnt have problem but just stuck somewhere withotu warning or error).  
 
-**check out the conda_create_env.txt for required conda environment setup. I use anaconda because my computer ffmpeg has trouble running the funasr-related things, so need ffmpeg inside conda.**  
-
-**Extra Note: please note the code patches zip file which contains the code to replace for pytorch lightning and related things in your virtual environment.**  
 
 本文档说明如何在GPT-SoVITS的UVR5模块中使用MUSA GPU进行人声分离和音频处理。
 

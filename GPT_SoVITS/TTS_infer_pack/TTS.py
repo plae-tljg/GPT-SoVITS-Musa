@@ -19,6 +19,7 @@ import ffmpeg
 import librosa
 import numpy as np
 import torch
+import torch_musa
 import torch.nn.functional as F
 import yaml
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
@@ -209,6 +210,9 @@ def set_seed(seed: int):
             # 开启后会影响精度
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
+        elif torch_musa.is_available():
+            torch_musa.manual_seed(seed)
+            torch_musa.manual_seed_all(seed)
     except:
         pass
     return seed
@@ -304,20 +308,45 @@ class TTS_Config:
             configs: dict = self._load_configs(self.configs_path)
 
         assert isinstance(configs, dict)
-        version = configs.get("version", "v2").lower()
+        
+        # 首先尝试从custom部分获取version，如果没有则从根级别获取，最后使用默认值
+        custom_config = configs.get("custom", {})
+        version = custom_config.get("version", configs.get("version", "v2"))
+        
+        print(f"调试信息 - custom_config: {custom_config}")
+        print(f"调试信息 - version: {version}")
+        print(f"调试信息 - version类型: {type(version)}")
+        
         assert version in ["v1", "v2", "v3", "v4", "v2Pro", "v2ProPlus"]
         self.default_configs[version] = configs.get(version, self.default_configs[version])
         self.configs: dict = configs.get("custom", deepcopy(self.default_configs[version]))
 
         self.device = self.configs.get("device", torch.device("cpu"))
+        
+        # 添加MUSA设备检测逻辑
+        if isinstance(self.device, str):
+            if self.device == "musa" and torch_musa.is_available():
+                self.device = torch.device("musa:0")
+            elif self.device == "cuda" and torch.cuda.is_available():
+                self.device = torch.device("cuda:0")
+            else:
+                self.device = torch.device("cpu")
+        
+        # 检查设备可用性
         if "cuda" in str(self.device) and not torch.cuda.is_available():
             print("Warning: CUDA is not available, set device to CPU.")
             self.device = torch.device("cpu")
+        elif "musa" in str(self.device) and not torch_musa.is_available():
+            print("Warning: MUSA is not available, set device to CPU.")
+            self.device = torch.device("cpu")
 
         self.is_half = self.configs.get("is_half", False)
-        # if str(self.device) == "cpu" and self.is_half:
-        #     print(f"Warning: Half precision is not supported on CPU, set is_half to False.")
-        #     self.is_half = False
+        
+        # 在MUSA设备上自动禁用半精度
+        if "musa" in str(self.device):
+            if self.is_half:
+                print("MUSA设备检测到，自动禁用半精度模式")
+                self.is_half = False
 
         self.version = version
         self.t2s_weights_path = self.configs.get("t2s_weights_path", None)
@@ -414,6 +443,15 @@ class TTS:
         else:
             self.configs: TTS_Config = TTS_Config(configs)
 
+        # 检查是否为MUSA设备，如果是则禁用半精度
+        try:
+            import torch_musa
+            if torch_musa.is_available() and "musa" in str(self.configs.device):
+                print("MUSA设备检测到，禁用半精度模式")
+                self.configs.is_half = False
+        except ImportError:
+            pass
+
         self.t2s_model: Text2SemanticLightningModule = None
         self.vits_model: Union[SynthesizerTrn, SynthesizerTrnV3] = None
         self.bert_tokenizer: AutoTokenizer = None
@@ -467,8 +505,16 @@ class TTS:
         self.cnhuhbert_model = CNHubert(base_path)
         self.cnhuhbert_model = self.cnhuhbert_model.eval()
         self.cnhuhbert_model = self.cnhuhbert_model.to(self.configs.device)
-        if self.configs.is_half and str(self.configs.device) != "cpu":
-            self.cnhuhbert_model = self.cnhuhbert_model.half()
+        # 检查是否为MUSA设备，如果是则不使用半精度
+        try:
+            import torch_musa
+            if torch_musa.is_available() and "musa" in str(self.configs.device):
+                print("MUSA设备检测到，CNHuBERT模型使用全精度")
+            elif self.configs.is_half and str(self.configs.device) != "cpu":
+                self.cnhuhbert_model = self.cnhuhbert_model.half()
+        except ImportError:
+            if self.configs.is_half and str(self.configs.device) != "cpu":
+                self.cnhuhbert_model = self.cnhuhbert_model.half()
 
     def init_bert_weights(self, base_path: str):
         print(f"Loading BERT weights from {base_path}")
@@ -476,8 +522,16 @@ class TTS:
         self.bert_model = AutoModelForMaskedLM.from_pretrained(base_path)
         self.bert_model = self.bert_model.eval()
         self.bert_model = self.bert_model.to(self.configs.device)
-        if self.configs.is_half and str(self.configs.device) != "cpu":
-            self.bert_model = self.bert_model.half()
+        # 检查是否为MUSA设备，如果是则不使用半精度
+        try:
+            import torch_musa
+            if torch_musa.is_available() and "musa" in str(self.configs.device):
+                print("MUSA设备检测到，BERT模型使用全精度")
+            elif self.configs.is_half and str(self.configs.device) != "cpu":
+                self.bert_model = self.bert_model.half()
+        except ImportError:
+            if self.configs.is_half and str(self.configs.device) != "cpu":
+                self.bert_model = self.bert_model.half()
 
     def init_vits_weights(self, weights_path: str):
         self.configs.vits_weights_path = weights_path
@@ -573,8 +627,16 @@ class TTS:
         vits_model = vits_model.eval()
 
         self.vits_model = vits_model
-        if self.configs.is_half and str(self.configs.device) != "cpu":
-            self.vits_model = self.vits_model.half()
+        # 检查是否为MUSA设备，如果是则不使用半精度
+        try:
+            import torch_musa
+            if torch_musa.is_available() and "musa" in str(self.configs.device):
+                print("MUSA设备检测到，VITS模型使用全精度")
+            elif self.configs.is_half and str(self.configs.device) != "cpu":
+                self.vits_model = self.vits_model.half()
+        except ImportError:
+            if self.configs.is_half and str(self.configs.device) != "cpu":
+                self.vits_model = self.vits_model.half()
 
     def init_t2s_weights(self, weights_path: str):
         print(f"Loading Text2Semantic weights from {weights_path}")
@@ -589,8 +651,16 @@ class TTS:
         t2s_model = t2s_model.to(self.configs.device)
         t2s_model = t2s_model.eval()
         self.t2s_model = t2s_model
-        if self.configs.is_half and str(self.configs.device) != "cpu":
-            self.t2s_model = self.t2s_model.half()
+        # 检查是否为MUSA设备，如果是则不使用半精度
+        try:
+            import torch_musa
+            if torch_musa.is_available() and "musa" in str(self.configs.device):
+                print("MUSA设备检测到，Text2Semantic模型使用全精度")
+            elif self.configs.is_half and str(self.configs.device) != "cpu":
+                self.t2s_model = self.t2s_model.half()
+        except ImportError:
+            if self.configs.is_half and str(self.configs.device) != "cpu":
+                self.t2s_model = self.t2s_model.half()
 
     def init_vocoder(self, version: str):
         if version == "v3":
@@ -648,10 +718,21 @@ class TTS:
             self.vocoder_configs["overlapped_len"] = 12
 
         self.vocoder = self.vocoder.eval()
-        if self.configs.is_half == True:
-            self.vocoder = self.vocoder.half().to(self.configs.device)
-        else:
-            self.vocoder = self.vocoder.to(self.configs.device)
+        # 检查是否为MUSA设备，如果是则不使用半精度
+        try:
+            import torch_musa
+            if torch_musa.is_available() and "musa" in str(self.configs.device):
+                print("MUSA设备检测到，Vocoder模型使用全精度")
+                self.vocoder = self.vocoder.to(self.configs.device)
+            elif self.configs.is_half == True:
+                self.vocoder = self.vocoder.half().to(self.configs.device)
+            else:
+                self.vocoder = self.vocoder.to(self.configs.device)
+        except ImportError:
+            if self.configs.is_half == True:
+                self.vocoder = self.vocoder.half().to(self.configs.device)
+            else:
+                self.vocoder = self.vocoder.to(self.configs.device)
 
     def init_sr_model(self):
         if self.sr_model is not None:
@@ -675,6 +756,15 @@ class TTS:
             enable: bool, whether to enable half precision.
 
         """
+        # 检查是否为MUSA设备
+        try:
+            import torch_musa
+            if torch_musa.is_available() and "musa" in str(self.configs.device):
+                print("MUSA设备检测到，禁用半精度模式")
+                enable = False
+        except ImportError:
+            pass
+            
         if str(self.configs.device) == "cpu" and enable:
             print("Half precision is not supported on CPU.")
             return
@@ -1363,6 +1453,8 @@ class TTS:
             gc.collect()  # 触发gc的垃圾回收。避免内存一直增长。
             if "cuda" in str(self.configs.device):
                 torch.cuda.empty_cache()
+            elif "musa" in str(self.configs.device):
+                torch_musa.empty_cache()
             elif str(self.configs.device) == "mps":
                 torch.mps.empty_cache()
         except:
