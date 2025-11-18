@@ -1,0 +1,30 @@
+cd ~/00lib/venv
+python3.10 -m venv gpt_sovits_env
+source /home/fit/00lib/00venv/gpt_sovits_env/bin/activate
+
+cd /home/fit/00lib/01repo/GPT-SoVITS-musa	#your repo location
+
+mkdir 00bak && cd 00bak
+
+pip install /home/fit/00lib/00musa/S80-v2.5.0-4.2.0/4.2.0/torch-2.5.0-cp310-cp310-linux_x86_64.whl
+pip install /home/fit/00lib/00musa/S80-v2.5.0-4.2.0/4.2.0/torch_musa-2.5.0-cp310-cp310-linux_x86_64.whl
+pip install 'numpy<2'
+
+# build & install torchvision
+git clone https://github.com/pytorch/vision.git -b v0.20.0 --depth 1
+cd vision && python setup.py install
+
+# build & install torchaudio
+cd .. && git clone https://github.com/pytorch/audio.git -b v2.5.0 --depth 1
+cd audio && python setup.py install && cd ../..
+
+pip install 'transformers>=4.43,<=4.50'
+pip install funasr==1.0.27
+pip install 'pytorch-lightning>=2.4' x_transformers 'torchmetrics<=1.5' peft onnxruntime 
+pip install librosa==0.10.2 modelscope	#==1.10.0	#this version seems have problem
+pip install ffmpeg-python 'av>=11'
+pip install 'pydantic<=2.10.6' psutil tensorboard 'gradio<5'
+pip install opencc --no-binary=opencc
+pip install cn2an g2pk2 ToJyutping 'ctranslate2>=4.0,<5' python_mecab_ko wordsegment ko_pron 'fast_langdetect>=0.3.1' jieba_fast split-lang chardet pypinyin g2p_en 'pyopenjtalk>=0.4.1'
+
+python webui.py

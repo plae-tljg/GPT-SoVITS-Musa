@@ -26,6 +26,12 @@ _log = logging.getLogger(__name__)
 class MUSAAccelerator(Accelerator):
     """Accelerator for Moore Threads MUSA devices."""
 
+    @property
+    @override
+    def name(self) -> str:
+        """Returns the name of the accelerator."""
+        return "musa"
+
     @override
     def setup_device(self, device: torch.device) -> None:
         """
